@@ -1,4 +1,4 @@
-"""Brisa Kart v0.21 private-room WebSocket relay. No accounts or saved player data."""
+"""Brisa Kart v0.24 private-room WebSocket relay. No accounts or saved player data."""
 import asyncio, json, os, secrets, time, logging, math, signal
 from contextlib import suppress
 from http import HTTPStatus
@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed, InvalidMessage
 PROTOCOL=21
+SUPPORTED_PROTOCOLS=(21,24)
 ROOMS={}
 CLIENTS={}
 MAX_ROOMS=int(os.getenv('MAX_ROOMS','100'))
@@ -41,6 +42,7 @@ class Room:
     players:list=field(default_factory=list)
     track:int=0
     phase:str='lobby'
+    protocol:int=21
     changed:float=field(default_factory=time.monotonic)
 async def send(player,data):
     try:await player.ws.send(json.dumps(data,separators=(',',':'),allow_nan=False))
@@ -49,9 +51,9 @@ async def broadcast(room,data):
     await asyncio.gather(*(send(p,data) for p in tuple(room.players)))
 def integer(value,low,high):
     return isinstance(value,int) and not isinstance(value,bool) and low<=value<=high
-def profile(data):
+def profile(data,protocol=21):
     result={}
-    for key,hi in [('pilot',7),('kart',5),('kit',3)]:
+    for key,hi in [('pilot',9 if protocol==24 else 7),('kart',5),('kit',3)]:
         if not integer(data.get(key),0,hi):raise ValueError('Escolha de kart inválida.')
         result[key]=data[key]
     # Friends race on equal equipment. Cosmetic choice is preserved.
@@ -73,19 +75,21 @@ async def handle(p,d):
     if kind=='leave':await leave(p);return
     if kind in ('create','join'):
         if p.room:raise ValueError('Você já está em uma sala.')
-        if d.get('protocol')!=PROTOCOL:raise ValueError('Atualizem o jogo para a mesma versão compatível.')
-        new_profile=profile(d.get('profile',{}))
+        if not integer(d.get('protocol'),21,24) or d.get('protocol') not in SUPPORTED_PROTOCOLS:raise ValueError('Atualizem o jogo para a mesma versão compatível.')
+        protocol=d['protocol']
+        new_profile=profile(d.get('profile',{}),protocol)
         if kind=='create':
             if len(ROOMS)>=MAX_ROOMS:raise ValueError('Servidor cheio. Tente mais tarde.')
             if not integer(d.get('track',0),0,63):raise ValueError('Circuito inválido.')
             code=''.join(secrets.choice(ALPHABET) for _ in range(6))
             while code in ROOMS:code=''.join(secrets.choice(ALPHABET) for _ in range(6))
-            room=Room(code,track=d.get('track',0));ROOMS[code]=room
+            room=Room(code,track=d.get('track',0),protocol=protocol);ROOMS[code]=room
         else:
             code=d.get('code','')
             if not isinstance(code,str) or len(code)!=6:raise ValueError('Use o código de seis caracteres.')
             room=ROOMS.get(code.upper())
             if not room:raise ValueError('Sala não encontrada. Confira o código.')
+            if room.protocol!=protocol:raise ValueError('Atualizem os dois jogos para a mesma versão para correr juntos.')
             if room.phase!='lobby' or len(room.players)>=2:raise ValueError('A sala está cheia ou a corrida já começou.')
         p.slot=len(room.players);p.room=room.code;p.profile=new_profile;p.ready=False;p.loaded=False;p.input_seq=-1
         room.players.append(p);room.changed=time.monotonic()
@@ -159,7 +163,7 @@ async def housekeeping():
 def http_request(connection, request):
     """Serve Render health checks and WebSocket traffic on the assigned port."""
     if request.path == '/health':
-        response = connection.respond(HTTPStatus.OK, json.dumps({'status':'ok','protocol':PROTOCOL})+'\n')
+        response = connection.respond(HTTPStatus.OK, json.dumps({'status':'ok','protocol':PROTOCOL,'supported_protocols':list(SUPPORTED_PROTOCOLS),'release':24})+'\n')
         del response.headers['Content-Type']
         response.headers['Content-Type'] = 'application/json; charset=utf-8'
     elif any(value.lower() == 'websocket' for value in request.headers.get_all('Upgrade')):
