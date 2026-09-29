@@ -37,7 +37,7 @@ async def main():
         else:
             raise AssertionError('Server did not start on assigned PORT')
         assert status == 200
-        assert json.loads(body) == {'status':'ok', 'protocol':21}
+        assert json.loads(body) == {'status':'ok', 'protocol':21, 'supported_protocols':[21,24,27], 'release':27}
         assert headers['Content-Type'].startswith('application/json')
         assert headers['Cache-Control'] == 'no-store'
         assert (await asyncio.to_thread(http, base+'/'))[0] == 200
