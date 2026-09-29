@@ -1,6 +1,7 @@
 import asyncio,json,sys,os
 from websockets.asyncio.client import connect
 URL=os.getenv('BRISA_SERVER_URL','ws://127.0.0.1:8765')
+PROXY=True if URL.startswith('wss://') else None
 async def receive(ws,kind):
  for _ in range(30):
   data=json.loads(await asyncio.wait_for(ws.recv(),3))
@@ -8,7 +9,7 @@ async def receive(ws,kind):
  raise AssertionError(kind)
 async def send(ws,kind,**kw):await ws.send(json.dumps({'type':kind,**kw}))
 async def main():
- async with connect(URL,proxy=None) as a,connect(URL,proxy=None) as b,connect(URL,proxy=None) as c:
+ async with connect(URL,proxy=PROXY) as a,connect(URL,proxy=PROXY) as b,connect(URL,proxy=PROXY) as c:
   p={'pilot':0,'kart':0,'kit':0}
   await send(a,'create',protocol=20,profile=p);assert 'versão' in (await receive(a,'error'))['message']
   await send(a,'create',protocol=21,profile=p,track=0);assert (await receive(a,'joined'))['slot']==0

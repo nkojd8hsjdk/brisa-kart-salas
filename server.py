@@ -4,13 +4,25 @@ from contextlib import suppress
 from http import HTTPStatus
 from dataclasses import dataclass, field
 from websockets.asyncio.server import serve
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidMessage
 PROTOCOL=21
 ROOMS={}
 CLIENTS={}
 MAX_ROOMS=int(os.getenv('MAX_ROOMS','100'))
 MAX_CONNECTIONS=int(os.getenv('MAX_CONNECTIONS','256'))
 ALPHABET='ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+class EmptyHealthProbeFilter(logging.Filter):
+    """Render's TCP probes close without sending an HTTP request."""
+    def filter(self, record):
+        error = record.exc_info[1] if record.exc_info else None
+        if not isinstance(error, InvalidMessage):
+            return True
+        cause = error.__cause__
+        while cause is not None:
+            if isinstance(cause, EOFError) and str(cause) == 'stream ends after 0 bytes, before end of line':
+                return False
+            cause = cause.__cause__
+        return True
 @dataclass
 class Player:
     ws:object
@@ -61,7 +73,7 @@ async def handle(p,d):
     if kind=='leave':await leave(p);return
     if kind in ('create','join'):
         if p.room:raise ValueError('Você já está em uma sala.')
-        if d.get('protocol')!=PROTOCOL:raise ValueError('Os dois jogadores precisam da versão 0.21.')
+        if d.get('protocol')!=PROTOCOL:raise ValueError('Atualizem o jogo para a mesma versão compatível.')
         new_profile=profile(d.get('profile',{}))
         if kind=='create':
             if len(ROOMS)>=MAX_ROOMS:raise ValueError('Servidor cheio. Tente mais tarde.')
@@ -155,12 +167,13 @@ def http_request(connection, request):
     elif request.path == '/':
         response = connection.respond(HTTPStatus.OK,
             'Brisa Kart | AJ Nova Studio\nServidor de salas pronto.\n'
-            'No jogo: COM AMIGO > CONEXAO. Use este endereco com wss://.\n')
+            'No jogo: COM AMIGO > CRIAR SALA. Compartilhe o codigo com seu amigo.\n')
     else:
         response = connection.respond(HTTPStatus.NOT_FOUND, 'Nao encontrado.\n')
     response.headers['Cache-Control'] = 'no-store'
     return response
 async def main():
+    logging.getLogger('websockets.server').addFilter(EmptyHealthProbeFilter())
     host=os.getenv('HOST','0.0.0.0');port=int(os.getenv('PORT','8765'))
     stop=asyncio.Event()
     loop=asyncio.get_running_loop()
