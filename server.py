@@ -1,4 +1,4 @@
-"""Brisa Kart v0.24 private-room WebSocket relay. No accounts or saved player data."""
+"""Brisa Kart v0.27 private-room WebSocket relay. No accounts or saved player data."""
 import asyncio, json, os, secrets, time, logging, math, signal
 from contextlib import suppress
 from http import HTTPStatus
@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed, InvalidMessage
 PROTOCOL=21
-SUPPORTED_PROTOCOLS=(21,24)
+SUPPORTED_PROTOCOLS=(21,24,27)
 ROOMS={}
 CLIENTS={}
 MAX_ROOMS=int(os.getenv('MAX_ROOMS','100'))
@@ -43,6 +43,7 @@ class Room:
     track:int=0
     phase:str='lobby'
     protocol:int=21
+    difficulty:int=1
     changed:float=field(default_factory=time.monotonic)
 async def send(player,data):
     try:await player.ws.send(json.dumps(data,separators=(',',':'),allow_nan=False))
@@ -53,14 +54,28 @@ def integer(value,low,high):
     return isinstance(value,int) and not isinstance(value,bool) and low<=value<=high
 def profile(data,protocol=21):
     result={}
-    for key,hi in [('pilot',9 if protocol==24 else 7),('kart',5),('kit',3)]:
+    for key,hi in [('pilot',9 if protocol>=24 else 7),('kart',5),('kit',3)]:
         if not integer(data.get(key),0,hi):raise ValueError('Escolha de kart inválida.')
         result[key]=data[key]
     # Friends race on equal equipment. Cosmetic choice is preserved.
     result.update(engine=0,tires=0,handling=0)
     return result
+def bot_profiles(room):
+    used={p.profile['pilot'] for p in room.players}
+    result=[]
+    for i in range(2):
+        pilot=(room.track+4+i*3)%10
+        while pilot in used:pilot=(pilot+1)%10
+        used.add(pilot)
+        result.append({'pilot':pilot,'kart':(room.track+2+i)%6,'kit':(room.track+i)%4})
+    return result
+
+def settings(room):
+    return {'difficulty':room.difficulty,'bots':bot_profiles(room)} if room.protocol>=27 else {}
+
 async def lobby(room):
-    await broadcast(room,{'type':'lobby','code':room.code,'track':room.track,'phase':room.phase,'members':[{'slot':p.slot,'ready':p.ready,**p.profile} for p in room.players]})
+    await broadcast(room,{'type':'lobby','code':room.code,'track':room.track,'phase':room.phase,'members':[{'slot':p.slot,'ready':p.ready,**p.profile} for p in room.players],**settings(room)})
+
 async def leave(p):
     if not p.room:return
     room=ROOMS.pop(p.room,None)
@@ -75,7 +90,7 @@ async def handle(p,d):
     if kind=='leave':await leave(p);return
     if kind in ('create','join'):
         if p.room:raise ValueError('Você já está em uma sala.')
-        if not integer(d.get('protocol'),21,24) or d.get('protocol') not in SUPPORTED_PROTOCOLS:raise ValueError('Atualizem o jogo para a mesma versão compatível.')
+        if not integer(d.get('protocol'),21,27) or d.get('protocol') not in SUPPORTED_PROTOCOLS:raise ValueError('Atualizem o jogo para a mesma versão compatível.')
         protocol=d['protocol']
         new_profile=profile(d.get('profile',{}),protocol)
         if kind=='create':
@@ -83,7 +98,9 @@ async def handle(p,d):
             if not integer(d.get('track',0),0,63):raise ValueError('Circuito inválido.')
             code=''.join(secrets.choice(ALPHABET) for _ in range(6))
             while code in ROOMS:code=''.join(secrets.choice(ALPHABET) for _ in range(6))
-            room=Room(code,track=d.get('track',0),protocol=protocol);ROOMS[code]=room
+            difficulty=d.get('difficulty',1)
+            if protocol>=27 and not integer(difficulty,0,2):raise ValueError('Dificuldade inválida.')
+            room=Room(code,track=d.get('track',0),protocol=protocol,difficulty=difficulty if protocol>=27 else 1);ROOMS[code]=room
         else:
             code=d.get('code','')
             if not isinstance(code,str) or len(code)!=6:raise ValueError('Use o código de seis caracteres.')
@@ -98,7 +115,9 @@ async def handle(p,d):
     if not room:raise ValueError('Entre em uma sala primeiro.')
     if kind=='config' and p.slot==0 and room.phase=='lobby':
         if not integer(d.get('track'),0,63):raise ValueError('Circuito inválido.')
-        room.track=d['track']
+        difficulty=d.get('difficulty',room.difficulty)
+        if room.protocol>=27 and not integer(difficulty,0,2):raise ValueError('Dificuldade inválida.')
+        room.track=d['track'];room.difficulty=difficulty if room.protocol>=27 else 1
         for member in room.players:member.ready=False
         await lobby(room)
     elif kind=='ready' and room.phase=='lobby':
@@ -106,7 +125,7 @@ async def handle(p,d):
     elif kind=='start' and p.slot==0 and room.phase=='lobby':
         if len(room.players)!=2 or not all(x.ready for x in room.players):raise ValueError('Os dois jogadores precisam estar prontos.')
         room.phase='loading';room.changed=time.monotonic()
-        await broadcast(room,{'type':'load','track':room.track,'members':[{'slot':x.slot,**x.profile} for x in room.players]})
+        await broadcast(room,{'type':'load','track':room.track,'members':[{'slot':x.slot,**x.profile} for x in room.players],**settings(room)})
     elif kind=='loaded' and room.phase=='loading':
         p.loaded=True
         if all(x.loaded for x in room.players):
@@ -127,7 +146,7 @@ async def handle(p,d):
     elif kind=='state' and room.phase=='race' and p.slot==0:
         # Physics is host-authoritative. The relay never forwards guest state.
         value=d.get('data')
-        if not isinstance(value,dict) or not isinstance(value.get('racers'),list) or len(value['racers'])!=2:raise ValueError('Estado de corrida inválido.')
+        if not isinstance(value,dict) or not isinstance(value.get('racers'),list) or len(value['racers'])!=(4 if room.protocol>=27 else 2):raise ValueError('Estado de corrida inválido.')
         await send(room.players[1],{'type':'state','data':value})
     elif kind=='rematch' and p.slot==0 and room.phase=='race':
         room.phase='lobby';room.changed=time.monotonic()
@@ -163,7 +182,7 @@ async def housekeeping():
 def http_request(connection, request):
     """Serve Render health checks and WebSocket traffic on the assigned port."""
     if request.path == '/health':
-        response = connection.respond(HTTPStatus.OK, json.dumps({'status':'ok','protocol':PROTOCOL,'supported_protocols':list(SUPPORTED_PROTOCOLS),'release':24})+'\n')
+        response = connection.respond(HTTPStatus.OK, json.dumps({'status':'ok','protocol':PROTOCOL,'supported_protocols':list(SUPPORTED_PROTOCOLS),'release':27})+'\n')
         del response.headers['Content-Type']
         response.headers['Content-Type'] = 'application/json; charset=utf-8'
     elif any(value.lower() == 'websocket' for value in request.headers.get_all('Upgrade')):
