@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.env*
+.venv/
+*.jks
+*.keystore
+*.apk
+password.txt

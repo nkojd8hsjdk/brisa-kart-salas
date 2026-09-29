@@ -1,0 +1,22 @@
+# Publish only this server folder as the repository root.
+# Rooms are held in memory: use one instance, with no autoscaling.
+services:
+  - type: web
+    name: brisa-kart-salas
+    runtime: python
+    plan: free
+    region: virginia
+    numInstances: 1
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    healthCheckPath: /health
+    autoDeployTrigger: "off"
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      - key: PORT
+        value: "10000"
+      - key: MAX_ROOMS
+        value: "10"
+      - key: MAX_CONNECTIONS
+        value: "32"
