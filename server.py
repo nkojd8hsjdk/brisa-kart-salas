@@ -1,4 +1,4 @@
-"""Brisa Kart v0.29 private-room WebSocket relay. No accounts or saved player data."""
+"""Brisa Kart v0.30 private-room WebSocket relay. No accounts or saved player data."""
 import asyncio, json, os, secrets, time, logging, math, signal
 from contextlib import suppress
 from http import HTTPStatus
@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed, InvalidMessage
 PROTOCOL=21
-SUPPORTED_PROTOCOLS=(21,24,27,29)
+SUPPORTED_PROTOCOLS=(21,24,27,29,30)
 ROOMS={}
 CLIENTS={}
 MAX_ROOMS=int(os.getenv('MAX_ROOMS','100'))
@@ -90,7 +90,7 @@ async def handle(p,d):
     if kind=='leave':await leave(p);return
     if kind in ('create','join'):
         if p.room:raise ValueError('Você já está em uma sala.')
-        if not integer(d.get('protocol'),21,29) or d.get('protocol') not in SUPPORTED_PROTOCOLS:raise ValueError('Atualizem o jogo para a mesma versão compatível.')
+        if not integer(d.get('protocol'),21,30) or d.get('protocol') not in SUPPORTED_PROTOCOLS:raise ValueError('Atualizem o jogo para a mesma versão compatível.')
         protocol=d['protocol']
         new_profile=profile(d.get('profile',{}),protocol)
         if kind=='create':
@@ -182,7 +182,7 @@ async def housekeeping():
 def http_request(connection, request):
     """Serve Render health checks and WebSocket traffic on the assigned port."""
     if request.path == '/health':
-        response = connection.respond(HTTPStatus.OK, json.dumps({'status':'ok','protocol':PROTOCOL,'supported_protocols':list(SUPPORTED_PROTOCOLS),'release':29})+'\n')
+        response = connection.respond(HTTPStatus.OK, json.dumps({'status':'ok','protocol':PROTOCOL,'supported_protocols':list(SUPPORTED_PROTOCOLS),'release':30})+'\n')
         del response.headers['Content-Type']
         response.headers['Content-Type'] = 'application/json; charset=utf-8'
     elif any(value.lower() == 'websocket' for value in request.headers.get_all('Upgrade')):
